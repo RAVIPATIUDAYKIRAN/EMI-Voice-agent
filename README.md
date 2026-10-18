@@ -274,14 +274,14 @@ These are review principles, not blanket guarantees. Confirm each implementation
 | 7 | **Architecture & Flow Diagrams** | Verified Complete | `ARCHITECTURE.md`, `docs/architecture.md` (native Mermaid diagrams) |
 | 8 | **Sample Scenarios & Call Summaries** | Verified Complete | `SAMPLE_SCENARIOS.md` (3 core scenarios + secondary; sanitized JSON outputs) |
 | 9 | **Centralized Configuration** | Verified Complete | `app/config/settings.py` (working-directory-independent Pydantic settings) |
-| 10 | **Automated Test Suite** | Verified Complete | `tests/` (52 automated tests passing with isolated stubs and mocks) |
+| 10 | **Automated Test Suite** | Verified Complete | `tests/` () |
 
 ---
 
 ## Limitations
 
 - **Real voice mode** requires OpenAI/Twilio credentials, a public HTTPS/WSS URL, an allowlisted E.164 destination, and an authorized `Idempotency-Key`. Calls may incur provider charges. No live provider operation was performed.
-- **Twilio Voice & Audio**: Twilio receives bounded speech segments, transcribed using file-based Whisper, and uses OpenAI TTS output converted to raw μ-law/8 kHz frames. This is turn-based, not real-time streaming STT. Playback `mark` acknowledgements and barge-in are not implemented or provider-verified.
+- **Twilio Voice & Audio**: Twilio receives bounded speech segments,Automated tests are available in tests/. See docs/requirements_audit.md for dated test results, verification scope, and known limitations.transcribed using file-based Whisper, and uses OpenAI TTS output converted to raw μ-law/8 kHz frames. This is turn-based, not real-time streaming STT. Playback `mark` acknowledgements and barge-in are not implemented or provider-verified.
 - **Local Audio (`POST /calls/{call_id}/voice-message`)**: Accepts bounded PCM WAV, calls OpenAI STT, delegates to the regular conversation handler, and returns OpenAI TTS WAV as base64 JSON. OpenAI credentials are required only when voice routes are invoked. TTS voices are optimized for English; Hindi speech quality has not been verified.
 - **Callback Scheduling**: Requires the supplied SQL migration (`data/migrations/001_callback_schedules.sql`) and an explicitly enabled worker (`CALLBACK_WORKER_ENABLED=true`).
 - **Dashboard Security**: `POST /calls/{call_id}/callback` and dashboard data return HTTP 503 when `DASHBOARD_API_KEY` is absent or shorter than 32 characters; they return 401 for a missing or incorrect request key after configuration. Set a randomly generated 32+ character secret in the process environment or local `.env`. This is fail-closed behavior.

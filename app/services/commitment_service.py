@@ -7,6 +7,7 @@ from typing import Literal
 from openai import APIStatusError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.config.settings import settings
 from app.services.ai_service import MODEL, client
 
 logger = logging.getLogger(__name__)
@@ -168,6 +169,8 @@ async def extract_commitment_details(
     """
     if not conversation_history:
         raise ValueError("Conversation history cannot be empty.")
+    if not settings.has_openai_credentials:
+        raise RuntimeError("OpenAI is not configured")
 
     allowed_roles = {"user", "assistant"}
 

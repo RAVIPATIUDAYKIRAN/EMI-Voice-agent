@@ -18,6 +18,9 @@ flowchart TD
         Customer["Customer and Commitment Router"]
         Calls["Call Initiation Router"]
         Conversation["Conversation and Summary Router"]
+        LocalVoice["Local WAV Voice Route"]
+        Telephony["Twilio Webhooks and Media Stream"]
+        Dashboard["Authenticated Dashboard and Callbacks"]
     end
 
     subgraph ServiceLayer["Business Logic and AI Services"]
@@ -25,16 +28,22 @@ flowchart TD
         Extract["Commitment and Intent Extraction"]
         AI["Conversational Response Service"]
         Summary["Call Summary Engine"]
+        SpeechAdapters["OpenAI Whisper / TTS adapters"]
+        LiveVoice["Bounded Twilio utterance bridge"]
     end
 
     subgraph ExternalAI["External LLM Provider"]
         OpenAI["OpenAI API - configured model"]
     end
 
+    subgraph VoiceProviders["Optional Voice Providers"]
+        TwilioProvider["Twilio Voice and Media Streams"]
+    end
+
     subgraph DataLayer["Persistence and Database Layer"]
         DBSession["Database Session and Transaction Handling"]
         MySQL[("MySQL: emi_voice_agent")]
-        Tables["customers, emis, calls, conversation_messages"]
+        Tables["customers, emis, calls, conversation_messages, callback_schedules"]
     end
 
     Client -->|HTTP GET / POST| Main
@@ -42,6 +51,9 @@ flowchart TD
     Main --> Customer
     Main --> Calls
     Main --> Conversation
+    Main --> LocalVoice
+    Main --> Telephony
+    Main --> Dashboard
 
     Config -.->|Masked Credentials & Database URL| DBSession
     Config -.->|Model Name & Masked API Key| AI
@@ -57,12 +69,23 @@ flowchart TD
     Customer --> DBSession
     Conversation --> Summary
     Conversation -->|Persist conversation and state| DBSession
+    LocalVoice -->|Validate and transcribe PCM WAV| SpeechAdapters
+    SpeechAdapters -->|Transcript through existing handler| Conversation
+    LocalVoice -->|Synthesize and validate WAV response| SpeechAdapters
+    TwilioProvider -->|Signed HTTPS / WSS events| Telephony
+    Telephony -->|Bounded silence-delimited μ-law segments| SpeechAdapters
+    SpeechAdapters -->|Whisper transcript| Conversation
+    Conversation -->|Agent reply text| LiveVoice
+    LiveVoice -->|Raw μ-law 8 kHz playback| TwilioProvider
+    LiveVoice --> SpeechAdapters
 
     DBSession --> MySQL
     MySQL --- Tables
 ```
 
 The diagram represents the intended application architecture. Exact implementation details should be verified against the current source code.
+
+The OpenAI speech adapters and Twilio path are optional. File-based Whisper processes bounded WAV files/utterances; it is not a native live-streaming STT interface. Mock tests cover codec and orchestration behavior. No actual audio model or Twilio provider delivery has been run.
 
 ## 2. Core Architecture Principles
 
@@ -183,20 +206,29 @@ The application exposes these core workflows:
 | `GET /health` | Check application health |
 | `GET /health/database` | Check database connectivity |
 | `GET /customers/{customer_id}/emi` | Retrieve customer and EMI information |
-| `POST /customers/{customer_id}/call` | Initiate a simulated call |
+| `POST /customers/{customer_id}/call` | Initiate simulated or optional voice call (`?channel=voice`) |
 | `POST /calls/{call_id}/message` | Process a conversation message |
 | `POST /customers/{customer_id}/commitment` | Record non-date details or finalize an existing pending payment commitment |
 | `POST /calls/{call_id}/summary` | Retrieve or generate a call summary |
+| `POST /calls/{call_id}/callback` | Schedule a protected callback |
+| `GET /dashboard` | Show the dashboard page |
+| `GET /dashboard/data` | Read dashboard data with `X-Dashboard-Key` |
 
 The exact request schemas, response schemas, and status codes are documented in `API_DOCUMENTATION.md`.
 
 ## 5. Operational Boundaries and Scope
 
-### A. Simulation Mode
+### A. Simulated and Optional Voice Modes
 
-This project is a simulated, text-based voice-agent MVP. Customer and agent messages are exchanged through REST APIs.
+Simulated text calls remain the default. An optional Twilio and OpenAI path supports outbound calls, recording consent, bounded utterance transcription with Whisper, TTS, and transcript persistence. It requires provider credentials, an authorized destination allowlist, public HTTPS/WSS hosting, and an idempotency key. Whisper processing is turn-based rather than live streaming.
 
-Live telephony, SIP or WebRTC audio streaming, and integrated speech-to-text (STT) and text-to-speech (TTS) are outside the current scope unless separately implemented.
+Twilio webhooks are signature-checked. Recording and streaming start only after explicit keypad consent. Transcripts use the same message handler and confirmation service as text turns. OpenAI TTS WAV is converted to raw μ-law/8 kHz frames for Twilio. Provider operations are mocked in isolated tests and require live account validation before deployment.
+
+### B. Callback, Retry, Dashboard, and Sentiment Features
+
+- Callback requests are stored in `callback_schedules`; outbound dispatch requires the callback worker to be explicitly enabled. Automatic retry scheduling is controlled by a separate setting.
+- The dashboard requires the configured operations key and obtains call/customer/EMI data through linked records.
+- Sentiment and stress cues use a small language-aware lexicon as operational hints; they are not a clinical assessment.
 
 ### B. LLM Integration
 

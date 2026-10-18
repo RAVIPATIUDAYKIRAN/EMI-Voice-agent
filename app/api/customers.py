@@ -64,7 +64,7 @@ async def get_customer_emi(
         emi_result = await db.execute(
             select(EMI)
             .where(EMI.customer_id == customer_id)
-            .order_by(EMI.due_date.asc())
+            .order_by(EMI.due_date.asc(), EMI.emi_id.asc())
         )
         emis = emi_result.scalars().all()
 
@@ -129,6 +129,7 @@ class CustomerCommitmentResponse(BaseModel):
     customer_id: int
     call_id: int
     emi_id: int
+    emi_amount: float
     promised_payment_date: date | None
     pending_payment_date: date | None
     payment_commitment_confirmed: bool
@@ -195,10 +196,33 @@ async def record_customer_commitment(
             )
 
         # Do not allow an unconfirmed request to overwrite an already confirmed commitment
-        if call.payment_commitment_confirmed and not request.is_confirmed:
-            raise HTTPException(
-                status_code=409,
-                detail="A payment commitment has already been confirmed for this call",
+        if call.payment_commitment_confirmed:
+            if not request.is_confirmed:
+                raise HTTPException(
+                    status_code=409,
+                    detail="A payment commitment has already been confirmed for this call",
+                )
+            if request.promised_payment_date != call.promised_payment_date:
+                raise HTTPException(
+                    status_code=409,
+                    detail="A different payment date has already been confirmed for this call",
+                )
+            # Idempotent retry: commitment is already confirmed with this date
+            if request.reason is not None:
+                call.reason = request.reason[:255]
+            if request.expected_salary_date is not None:
+                call.expected_salary_date = request.expected_salary_date
+            await db.commit()
+            return CustomerCommitmentResponse(
+                customer_id=customer.customer_id,
+                call_id=call.call_id,
+                emi_id=call.emi_id,
+                emi_amount=float(emi.emi_amount),
+                promised_payment_date=call.promised_payment_date,
+                pending_payment_date=None,
+                payment_commitment_confirmed=True,
+                call_status=call.call_status,
+                message="Payment commitment already confirmed for this call.",
             )
 
         # Enforce confirmation safety rules
@@ -249,6 +273,7 @@ async def record_customer_commitment(
                 proposed_payment_date=request.promised_payment_date,
                 agent_last_message=latest_agent_msg.message_text,
                 pending_proposal_date=call.pending_payment_date,
+                proposed_payment_amount=emi.emi_amount,
             )
 
             if verification.status != ConfirmationStatus.CONFIRMED:
@@ -291,6 +316,7 @@ async def record_customer_commitment(
             customer_id=customer.customer_id,
             call_id=call.call_id,
             emi_id=call.emi_id,
+            emi_amount=float(emi.emi_amount),
             promised_payment_date=call.promised_payment_date,
             pending_payment_date=call.pending_payment_date,
             payment_commitment_confirmed=call.payment_commitment_confirmed,

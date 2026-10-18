@@ -15,11 +15,8 @@ from app.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-MODEL = settings.openai_model
-
 api_key = settings.openai_api_key.get_secret_value().strip()
-if not api_key:
-    logger.warning("OPENAI_API_KEY is not set or empty in environment.")
+MODEL = settings.openai_model
 
 client = AsyncOpenAI(
     api_key=api_key or "missing_key",
@@ -51,7 +48,12 @@ async def generate_agent_reply(
     conversation_history: list[dict[str, str]],
     commitment_confirmed: bool = False,
     suggested_payment_date: str | None = None,
+    preferred_language: str | None = None,
+    opening_turn: bool = False,
+    emi_status: str | None = None,
 ) -> str:
+    if not settings.has_openai_credentials:
+        raise RuntimeError("OpenAI is not configured")
     instructions = (
         "You are a polite, professional EMI collection voice assistant for a financial institution. "
         "Be respectful, concise, empathetic, and strictly non-coercive. Never threaten, "
@@ -59,6 +61,7 @@ async def generate_agent_reply(
         "customer and EMI facts. Never claim that a payment was made or received. "
         "Do not invent dates, amounts, policies, or account details. "
         "Always ensure proper spacing, spelling, and grammar without accidental word concatenations. "
+        f"Reply in the customer's preferred language ({preferred_language or 'the language of the latest customer message'}). "
         "Ask at most one clear follow-up question when needed. "
         "Payment date confirmation rules: "
         "- If the customer mentions, proposes, or suggests a payment date (whether tentative or definite, "
@@ -93,13 +96,47 @@ async def generate_agent_reply(
             f"You MUST ask a date-specific confirmation question for {suggested_payment_date}, "
             f"for example: 'Would you be able to pay the INR {emi_amount} on {suggested_payment_date}?'."
         )
+    if opening_turn:
+        status_text = emi_status or "due"
+        instructions += (
+            " This is the opening turn of a simulated EMI reminder conversation. "
+            "Greet the customer by name, identify yourself as an automated EMI assistant "
+            "without inventing a bank name, state the supplied EMI amount and status, "
+            "and politely ask the reason for the delay. Do not claim a payment was made "
+            "or that a commitment is confirmed. "
+            f"The recorded EMI status is {status_text}."
+        )
+
+    # The terminal CLI intentionally starts with no prior messages. The
+    # Responses API still requires input, so give the model an explicit task;
+    # customer and EMI facts remain in the instructions above.
+    response_input: str | list[dict[str, str]] = conversation_history
+    if opening_turn and not conversation_history:
+        response_input = (
+            "Generate the opening message now using the customer and EMI context "
+            "in the instructions."
+        )
+
+    if isinstance(response_input, str):
+        has_input = bool(response_input.strip())
+    elif isinstance(response_input, list):
+        has_input = any(
+            isinstance(message, dict)
+            and isinstance(message.get("content"), str)
+            and message["content"].strip()
+            for message in response_input
+        )
+    else:
+        has_input = False
+    if not has_input:
+        raise RuntimeError("Cannot generate an AI reply without conversation input")
 
     try:
         response = await asyncio.wait_for(
             client.responses.create(
                 model=MODEL,
                 instructions=instructions,
-                input=conversation_history,
+                input=response_input,
             ),
             timeout=35.0,
         )
@@ -113,6 +150,6 @@ async def generate_agent_reply(
     except asyncio.TimeoutError:
         logger.warning("AI response exceeded the application timeout")
         raise
-    except Exception:
-        logger.exception("AI response generation failed")
+    except Exception as exc:
+        logger.error("AI response generation failed (%s)", type(exc).__name__)
         raise

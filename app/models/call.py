@@ -27,6 +27,10 @@ class Call(Base):
     emi_id: Mapped[int] = mapped_column(
         ForeignKey("emis.emi_id"), nullable=False
     )
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, unique=True
+    )
+    provider_call_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     call_status: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default=text("'INITIATED'")
     )

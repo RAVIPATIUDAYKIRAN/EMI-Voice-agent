@@ -94,6 +94,7 @@ def test_environment_variable_precedence_over_env_file(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
+    monkeypatch.delenv("MYSQL_DATABASE", raising=False)
     monkeypatch.setenv("MYSQL_HOST", "192.168.1.50")
     monkeypatch.setenv("MYSQL_PORT", "4000")
 
@@ -102,3 +103,35 @@ def test_environment_variable_precedence_over_env_file(tmp_path, monkeypatch):
     assert settings.mysql_host == "192.168.1.50"
     assert settings.mysql_port == 4000
     assert settings.mysql_database == "file_db"
+
+
+def test_openai_voice_defaults_load_and_secret_is_masked(monkeypatch):
+    settings = Settings(_env_file=None)
+    assert settings.openai_model == "gpt-6-luna"
+    assert settings.openai_stt_model == "whisper-1"
+    assert settings.openai_tts_model == "gpt-4o-mini-tts"
+    assert settings.openai_tts_voice == "coral"
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret-value")
+    configured = Settings(_env_file=None)
+    assert "test-secret-value" not in repr(configured)
+
+
+def test_openai_audio_settings_read_environment_without_loading_credentials(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-6-luna")
+    monkeypatch.setenv("OPENAI_STT_MODEL", "whisper-1")
+    monkeypatch.setenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
+    monkeypatch.setenv("OPENAI_TTS_VOICE", "coral")
+    settings = Settings(_env_file=None)
+    assert settings.has_openai_credentials
+    assert settings.openai_model == "gpt-6-luna"
+    assert settings.openai_stt_model == "whisper-1"
+    assert settings.openai_tts_model == "gpt-4o-mini-tts"
+    assert settings.openai_tts_voice == "coral"
+
+
+def test_settings_reject_invalid_port_and_empty_model():
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, MYSQL_PORT=0)
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, OPENAI_TTS_MODEL=" ")

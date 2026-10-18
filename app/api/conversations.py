@@ -16,9 +16,13 @@ from app.services.commitment_service import (
     extract_commitment_details,
 )
 from app.services.confirmation_service import (
+    CONFIRMATION_QUESTION_PHRASES,
     ConfirmationStatus,
+    DEVANAGARI_DIGITS,
+    extract_dates_from_text,
     verify_payment_confirmation,
 )
+from app.services.sentiment_service import assess_sentiment
 
 logger = logging.getLogger(__name__)
 
@@ -36,94 +40,45 @@ def extract_pending_payment_date(message: str) -> date | None:
     if not message or "?" not in message:
         return None
 
-    raw_sentences = re.split(r"(?<=[.!?\n;])\s+", message.strip())
-
-    confirmation_phrases = (
-        "can you pay",
-        "will you pay",
-        "could you pay",
-        "would you be able to pay",
-        "will you be able to pay",
-        "can you make the payment",
-        "could you make the payment",
-        "would you be able to make the payment",
-        "will you be able to make the payment",
-        "can you confirm",
-        "could you confirm",
-        "would you confirm",
-        "will you confirm",
-        "confirm that you can pay",
-        "confirm that you will pay",
-        "a date you can confirm",
-        "confirm",
-    )
-
-    patterns = (
-        (r"\b\d{4}-\d{2}-\d{2}\b", ("%Y-%m-%d",)),
-        (
-            r"\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\s+\d{4}\b",
-            ("%d %B %Y", "%d %b %Y"),
-        ),
-        (
-            r"\b[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b",
-            ("%B %d %Y", "%B %d, %Y", "%b %d %Y", "%b %d, %Y"),
-        ),
-        (r"\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\b", ("%d %B", "%d %b")),
-        (r"\b[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?\b", ("%B %d", "%b %d")),
-    )
+    raw_sentences = re.split(r"(?<=[.!?\n;।])\s+", message.strip())
 
     for sent in reversed(raw_sentences):
         sent = sent.strip()
         if not sent.endswith("?"):
             continue
 
-        sent_lower = sent.lower()
+        sent_lower = sent.lower().translate(DEVANAGARI_DIGITS)
         matched_phrase = next(
-            (p for p in confirmation_phrases if p in sent_lower),
+            (p for p in CONFIRMATION_QUESTION_PHRASES if p in sent_lower),
             None,
         )
         if not matched_phrase:
             continue
 
-        if matched_phrase == "confirm" and not any(
-            k in sent_lower for k in ("pay", "payment", "date")
+        if matched_phrase in ("confirm", "पुष्टि") and not any(
+            k in sent_lower for k in ("pay", "payment", "date", "भुगतान", "तारीख", "तारीख़")
         ):
             continue
 
         candidates = []
-        for pattern, formats in patterns:
-            for match in re.finditer(pattern, sent, re.IGNORECASE):
-                token = match.group(0).strip(" ,.")
-                clean_token = re.sub(
-                    r"(\d{1,2})(?:st|nd|rd|th)", r"\1", token, flags=re.IGNORECASE
-                )
-                clean_token = re.sub(r"\s+", " ", clean_token)
-                for fmt in formats:
-                    try:
-                        if fmt == "%Y-%m-%d":
-                            parsed = date.fromisoformat(clean_token)
-                        else:
-                            parsed = datetime.strptime(clean_token, fmt).date()
-                            if "%Y" not in fmt:
-                                # A date without a year is accepted only with explicit confirmation wording
-                                if not (
-                                    "confirm" in sent_lower
-                                    or "a date you can confirm" in sent_lower
-                                ):
-                                    continue
-                                parsed = parsed.replace(year=date.today().year)
-
-                        candidates.append((match.start(), parsed))
-                        break
-                    except ValueError:
-                        continue
+        raw_candidates = extract_dates_from_text(sent)
+        for pos, parsed, has_year in raw_candidates:
+            if not has_year:
+                # A date without a year is accepted only with explicit confirmation wording
+                if not (
+                    "confirm" in sent_lower
+                    or "a date you can confirm" in sent_lower
+                    or "पुष्टि" in sent_lower
+                ):
+                    continue
+            candidates.append((pos, parsed))
 
         if not candidates:
             continue
 
         confirmation_positions = [
             sent_lower.find(phrase)
-            for phrase in confirmation_phrases
+            for phrase in CONFIRMATION_QUESTION_PHRASES
             if sent_lower.find(phrase) >= 0
         ]
         if confirmation_positions:
@@ -145,63 +100,54 @@ def extract_customer_proposed_date(message: str) -> date | None:
     if not message:
         return None
 
-    patterns = (
-        (r"\b\d{4}-\d{2}-\d{2}\b", ("%Y-%m-%d",)),
-        (
-            r"\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\s+\d{4}\b",
-            ("%d %B %Y", "%d %b %Y"),
-        ),
-        (
-            r"\b[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b",
-            ("%B %d %Y", "%B %d, %Y", "%b %d %Y", "%b %d, %Y"),
-        ),
-        (r"\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\b", ("%d %B", "%d %b")),
-        (r"\b[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?\b", ("%B %d", "%b %d")),
-    )
+    raw_candidates = extract_dates_from_text(message)
+    if not raw_candidates:
+        return None
 
     candidates: list[tuple[int, date, bool, bool]] = []
+    msg_lower = message.lower().translate(DEVANAGARI_DIGITS)
 
-    for pattern, formats in patterns:
-        for match in re.finditer(pattern, message, re.IGNORECASE):
-            token = match.group(0).strip(" ,.")
-            clean_token = re.sub(
-                r"(\d{1,2})(?:st|nd|rd|th)", r"\1", token, flags=re.IGNORECASE
+    for pos, parsed, has_year in raw_candidates:
+        start_ctx = max(0, pos - 40)
+        end_ctx = min(len(msg_lower), pos + 60)
+        window = msg_lower[start_ctx:end_ctx]
+
+        is_payment = any(
+            kw in window
+            for kw in (
+                "pay",
+                "payment",
+                "clear",
+                "settle",
+                "transfer",
+                "confirm",
+                "भुगतान",
+                "पे",
+                "चुका",
+                "दूंगा",
+                "दूँगा",
+                "दूंगी",
+                "दूँगी",
+                "भर",
+                "पुष्टि",
+                "वादा",
             )
-            clean_token = re.sub(r"\s+", " ", clean_token)
-            for fmt in formats:
-                try:
-                    if fmt == "%Y-%m-%d":
-                        parsed = date.fromisoformat(clean_token)
-                    else:
-                        parsed = datetime.strptime(clean_token, fmt).date()
-                        if "%Y" not in fmt:
-                            parsed = parsed.replace(year=date.today().year)
+        )
+        is_salary = any(
+            kw in window
+            for kw in (
+                "salary",
+                "paycheck",
+                "credited",
+                "wages",
+                "सैलरी",
+                "वेतन",
+                "तनख्वाह",
+            )
+        )
+        is_pure_salary = is_salary and not is_payment
 
-                    start_ctx = max(0, match.start() - 40)
-                    end_ctx = min(len(message), match.end() + 40)
-                    window = message[start_ctx:end_ctx].lower()
-
-                    is_payment = any(
-                        kw in window
-                        for kw in (
-                            "pay",
-                            "payment",
-                            "clear",
-                            "settle",
-                            "transfer",
-                            "confirm",
-                        )
-                    )
-                    is_salary = any(
-                        kw in window
-                        for kw in ("salary", "paycheck", "credited", "wages")
-                    )
-                    is_pure_salary = is_salary and not is_payment
-
-                    candidates.append((match.start(), parsed, is_payment, is_pure_salary))
-                    break
-                except ValueError:
-                    continue
+        candidates.append((pos, parsed, is_payment, is_pure_salary))
 
     if not candidates:
         return None
@@ -234,12 +180,18 @@ class CustomerMessageRequest(BaseModel):
 
 class ConversationResponse(BaseModel):
     call_id: int
+    customer_id: int
+    emi_id: int
+    emi_amount: float
     customer_message: str
     agent_reply: str
     extraction: CommitmentExtraction | None = None
     extraction_status: str
     commitment_status: str
     call_status: str
+    sentiment: str
+    stress_level: str
+    sentiment_score: int | None
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +233,9 @@ def _build_call_summary(
     *,
     extraction: CommitmentExtraction | None,
     call: Call,
+    emi_amount: float,
+    sentiment: str,
+    stress_level: str,
 ) -> str:
     """Build a concise summary using extracted facts and verified DB state."""
     parts: list[str] = []
@@ -293,6 +248,9 @@ def _build_call_summary(
             parts.append(f"Reason: {call.reason}")
     elif call.reason:
         parts.append(f"Reason: {call.reason}")
+
+    parts.append(f"EMI amount: INR {emi_amount:.2f}")
+    parts.append(f"Customer sentiment: {sentiment}; stress cue: {stress_level}")
 
     if call.expected_salary_date is not None:
         parts.append(
@@ -431,6 +389,7 @@ async def send_customer_message(
             proposed_payment_date=None,
             agent_last_message=previous_agent_text,
             pending_proposal_date=call.pending_payment_date,
+            proposed_payment_amount=emi.emi_amount,
         )
 
         if confirmation_result.status == ConfirmationStatus.CONFIRMED:
@@ -482,6 +441,7 @@ async def send_customer_message(
             conversation_history=history,
             commitment_confirmed=call.payment_commitment_confirmed,
             suggested_payment_date=suggested_payment_date_str,
+            preferred_language=customer.preferred_language,
         )
 
         new_pending_date = extract_pending_payment_date(reply)
@@ -595,9 +555,13 @@ async def send_customer_message(
                 if not call.reason:
                     call.reason = "Customer unavailable; callback requested"
 
+        sentiment_assessment = assess_sentiment(customer_message)
         call.call_summary = _build_call_summary(
             extraction=extraction,
             call=call,
+            emi_amount=float(emi.emi_amount),
+            sentiment=sentiment_assessment.sentiment,
+            stress_level=sentiment_assessment.stress_level,
         )
 
         # Single commit for the customer message, agent reply, verified
@@ -611,12 +575,18 @@ async def send_customer_message(
 
         return ConversationResponse(
             call_id=call_id,
+            customer_id=customer.customer_id,
+            emi_id=emi.emi_id,
+            emi_amount=float(emi.emi_amount),
             customer_message=customer_message,
             agent_reply=reply,
             extraction=extraction,
             extraction_status=extraction_status,
             commitment_status=commitment_status,
             call_status=call.call_status,
+            sentiment=sentiment_assessment.sentiment,
+            stress_level=sentiment_assessment.stress_level,
+            sentiment_score=sentiment_assessment.score,
         )
 
     except HTTPException:
@@ -660,6 +630,9 @@ class CallSummaryResponse(BaseModel):
     reason: str | None
     expected_salary_date: date | None
     call_summary: str
+    sentiment: str
+    stress_level: str
+    sentiment_score: int | None
 
 
 @router.post(
@@ -703,10 +676,27 @@ async def generate_call_summary(
                 detail="Call customer or EMI record is unavailable",
             )
 
+        latest_customer_result = await db.execute(
+            select(ConversationMessage)
+            .where(
+                ConversationMessage.call_id == call_id,
+                ConversationMessage.speaker == "CUSTOMER",
+            )
+            .order_by(ConversationMessage.message_id.desc())
+            .limit(1)
+        )
+        latest_customer_message = latest_customer_result.scalar_one_or_none()
+        sentiment = assess_sentiment(
+            latest_customer_message.message_text if latest_customer_message else ""
+        )
+
         if not call.call_summary:
             call.call_summary = _build_call_summary(
                 extraction=None,
                 call=call,
+                emi_amount=float(emi.emi_amount),
+                sentiment=sentiment.sentiment,
+                stress_level=sentiment.stress_level,
             )
             await db.commit()
 
@@ -722,6 +712,9 @@ async def generate_call_summary(
             reason=call.reason,
             expected_salary_date=call.expected_salary_date,
             call_summary=call.call_summary,
+            sentiment=sentiment.sentiment,
+            stress_level=sentiment.stress_level,
+            sentiment_score=sentiment.score,
         )
 
     except HTTPException:

@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS calls (
     call_id INT NOT NULL AUTO_INCREMENT,
     customer_id INT NOT NULL,
     emi_id INT NOT NULL,
+    idempotency_key VARCHAR(128) NULL UNIQUE,
+    provider_call_id VARCHAR(64) NULL,
     call_status VARCHAR(20) NOT NULL DEFAULT 'INITIATED',
     reason VARCHAR(255) NULL,
     expected_salary_date DATE NULL,
@@ -50,6 +52,22 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (message_id),
     CONSTRAINT fk_conversation_messages_call
+        FOREIGN KEY (call_id)
+        REFERENCES calls(call_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS callback_schedules (
+    callback_id INT NOT NULL AUTO_INCREMENT,
+    call_id INT NOT NULL,
+    scheduled_at DATETIME NOT NULL,
+    attempt_number INT NOT NULL DEFAULT 1,
+    reason VARCHAR(120) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (callback_id),
+    KEY ix_callback_schedules_due (status, scheduled_at),
+    CONSTRAINT fk_callback_schedules_call
         FOREIGN KEY (call_id)
         REFERENCES calls(call_id)
         ON DELETE CASCADE

@@ -185,6 +185,19 @@ GET	/dashboard	Open the operations dashboard
 GET	/dashboard/data	Read authenticated call and commitment metrics
 
 
+## Demonstrations
+
+Screenshots of the simulated API workflows are available in
+[`docs/demonstrations/`](docs/demonstrations/).
+
+The demonstrations cover:
+- FastAPI Swagger UI and available endpoints
+- English simulated conversation and call summary
+- Hindi simulated conversation and call summary
+
+These are simulated conversations, not evidence of completed live telephone calls.
+
+
 See API_DOCUMENTATION.md and the running Swagger UI for request schemas and response details.
 Conversation and Commitment Confirmation Workflow
 1. Call initiation: POST /customers/{customer_id}/call creates a simulated call by default. Add ?channel=voice to explicitly place a real Twilio call when providers are configured.

@@ -5,7 +5,7 @@
 INSERT INTO customers
     (customer_id, full_name, phone_number, preferred_language)
 VALUES
-    (1, 'Rahul Sharma', '9000000001', 'English'),
+    (1, 'Uday Kiran Ravipati', '+919963453038', 'English'),
     (2, 'Priya Reddy', '9000000002', 'English'),
     (3, 'Arjun Kumar', '9000000003', 'Hindi'),
     (4, 'Sneha Rao', '9000000004', 'English');
